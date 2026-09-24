@@ -1,0 +1,14 @@
+# Binaries
+/bin/
+*.exe
+*.test
+*.out
+
+# Generated protobuf code is produced by `buf generate`
+/gen/
+
+# Local env / editor files
+.env
+.idea/
+.vscode/
+.DS_Store
