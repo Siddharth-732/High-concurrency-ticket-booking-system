@@ -12,3 +12,6 @@
 .idea/
 .vscode/
 .DS_Store
+
+# Docker Desktop VM / bind-mount cruft, if any ever shows up here
+docker-data/
