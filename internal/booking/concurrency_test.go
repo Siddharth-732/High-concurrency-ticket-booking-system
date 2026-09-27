@@ -81,6 +81,8 @@ func TestConcurrentHold_ExactlyOneWinner(t *testing.T) {
 	if seatRowCount != 1 {
 		t.Errorf("booking_seats rows for contested seat = %d, want 1", seatRowCount)
 	}
+
+	testutil.AssertInvariants(t, ctx, pool)
 }
 
 // TestConcurrentHold_OverlappingMultiSeatAllOrNothing goes one step
@@ -164,4 +166,6 @@ func TestConcurrentHold_OverlappingMultiSeatAllOrNothing(t *testing.T) {
 	if claimedCount != 2 {
 		t.Errorf("claimed seats = %d, want exactly 2", claimedCount)
 	}
+
+	testutil.AssertInvariants(t, ctx, pool)
 }

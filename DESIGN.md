@@ -84,3 +84,34 @@ Each test run spins up a fresh, disposable Postgres container via
 polluted by data left over from a previous run, and the same command
 (`go test ./...`) works identically on a laptop or in CI with no setup
 step required first.
+
+## The invariant checker (Task 6)
+
+`internal/invariant` is a general-purpose data-integrity auditor, not a
+test helper: it takes no dependency on the `testing` package, so it could
+just as well run as a one-off admin check against a live database. Every
+test from here on calls it (via `testutil.AssertInvariants`) as a generic
+backstop, on top of whatever specific assertions that test already makes.
+
+Three rules, in order of how likely they are to actually fire:
+
+1. **`seat_claimed_twice`** -- deliberately redundant with the
+   `UNIQUE(seat_id)` constraint on `booking_seats`. This rule can never
+   fire through any code path in this project, which is itself the point:
+   it exists so that if a future migration ever weakens that constraint,
+   the failure is a clear, named invariant violation instead of a silent
+   loss of the core guarantee.
+2. **`claim_on_released_booking`** -- a `booking_seats` row must not
+   outlive its parent booking once that booking is `cancelled`,
+   `expired`, or `failed`; releasing a hold is supposed to delete the row
+   in the same transaction. This is the rule most likely to catch a real
+   bug once Task 8 (the expiry sweeper) and `CancelBooking` exist.
+3. **`seat_show_mismatch`** -- a booking must only claim seats belonging
+   to its own show.
+
+Rules 2 and 3 are tested by manufacturing the exact bug they guard
+against with raw SQL that bypasses `Store` entirely (no correct code path
+in this codebase can produce either state), then confirming `Check`
+reports it. This is the difference between "the checker always says
+clean" and "the checker actually detects a broken invariant" -- a checker
+that can't be proven to ever fail is not trustworthy.
