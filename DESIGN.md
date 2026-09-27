@@ -55,3 +55,32 @@ indexed column. At this project's scale that cost is irrelevant.
 
 No `users` table exists. There is no auth service in scope; `user_id` is
 an opaque UUID supplied by the caller.
+
+## Proving the invariant under real concurrency (Task 5)
+
+`internal/booking/concurrency_test.go` is the test the project's headline
+claim rests on. Two scenarios, both run with `go test -race`:
+
+1. **`TestConcurrentHold_ExactlyOneWinner`** -- 300 goroutines, released
+   at the same instant via a closed channel, all call `CreateHold` for the
+   *same single seat* with distinct users. Exactly one must succeed; the
+   rest must get `ErrSeatUnavailable`.
+2. **`TestConcurrentHold_OverlappingMultiSeatAllOrNothing`** -- two groups
+   of goroutines request overlapping seat pairs (`{A,B}` vs `{B,C}`) at
+   the same instant. Because every request from one group shares seat `B`
+   with every request from the other, at most one request in the entire
+   run can succeed -- this proves the all-or-nothing guarantee holds
+   under contention, not just in a single-threaded test.
+
+Both tests verify the outcome twice: once from the in-memory tally of
+what `CreateHold` returned to each goroutine, and once by querying
+Postgres directly afterwards (`SELECT count(*) FROM booking_seats ...`).
+The second check is the one that matters -- it confirms the database
+itself, not just our bookkeeping of return values, ends up in the
+correct state.
+
+Each test run spins up a fresh, disposable Postgres container via
+`testcontainers-go` (see `internal/testutil`), so results can never be
+polluted by data left over from a previous run, and the same command
+(`go test ./...`) works identically on a laptop or in CI with no setup
+step required first.
