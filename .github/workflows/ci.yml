@@ -1,0 +1,48 @@
+name: CI
+
+# Runs on every push to main and every PR targeting main -- CI exists to
+# catch a regression the moment it's introduced, not to certify a
+# "finished" project. This workflow starts minimal (build + vet + test)
+# and grows a step at a time as later tasks add more to check: lint
+# (Task 11), the Docker image build (Task 15), the load test (Task 17).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel a still-running CI run for the same branch/PR when a new commit
+# supersedes it, instead of letting both run to completion.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          # Reads the version straight from go.mod so the two can never
+          # drift apart.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (race detector)
+        # ubuntu-latest ships Docker already running, which is exactly
+        # what internal/testutil needs to spin up disposable Postgres
+        # containers via testcontainers-go -- no extra setup step. It
+        # also ships a 64-bit gcc, so -race needs none of the CC
+        # workaround that Windows development machines do (see
+        # DESIGN.md).
+        run: go test ./... -race -timeout 300s

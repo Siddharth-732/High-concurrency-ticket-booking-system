@@ -1,0 +1,11 @@
+# Normalize line endings to LF in the repository regardless of the
+# checkout platform. Without this, Windows editors can silently flip files
+# between CRLF/LF depending on settings, which shows up as noisy,
+# unreadable diffs that have nothing to do with the actual change.
+* text=auto eol=lf
+
+# Binary-ish or generated files: never diff, never touch line endings.
+*.png binary
+*.jpg binary
+*.pdf binary
+go.sum -diff

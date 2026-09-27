@@ -56,6 +56,30 @@ indexed column. At this project's scale that cost is irrelevant.
 No `users` table exists. There is no auth service in scope; `user_id` is
 an opaque UUID supplied by the caller.
 
+## CreateHold, and the local -race toolchain detour (Task 4)
+
+`internal/booking.Store.CreateHold` does not lock anything itself. It
+inserts the `bookings` row, then one `booking_seats` row per seat, all in
+a single transaction. If any seat insert violates the `UNIQUE(seat_id)`
+constraint, the function returns before calling `Commit`, and the deferred
+`Rollback` undoes everything -- including the `bookings` row. All-or-
+nothing for a multi-seat hold comes from transactional atomicity, not from
+`SELECT ... FOR UPDATE` or any lock ordering we have to get right.
+
+Tests run against a real, disposable Postgres container per test run (see
+`internal/testutil`, via `testcontainers-go`) rather than the docker-compose
+Postgres from Task 2 -- tests must be hermetic and runnable with a bare
+`go test`, with no requirement to remember `docker compose up` first.
+
+**Local toolchain note (Windows only):** `go test -race` requires cgo,
+which requires a 64-bit C compiler. This machine's `gcc` on PATH is
+`MinGW.org GCC` (32-bit only), installed for unrelated C++ work, and left
+untouched deliberately. Instead, a separate 64-bit `mingw-w64` toolchain
+(`WinLibs`) was installed and pointed to only via the `CC` **user
+environment variable** -- PATH order is never touched, so the existing
+`gcc` command and C++ setup are unaffected. This is a Windows-development-
+machine-only concern: CI (see below) needs none of it.
+
 ## Proving the invariant under real concurrency (Task 5)
 
 `internal/booking/concurrency_test.go` is the test the project's headline
@@ -115,3 +139,49 @@ in this codebase can produce either state), then confirming `Check`
 reports it. This is the difference between "the checker always says
 clean" and "the checker actually detects a broken invariant" -- a checker
 that can't be proven to ever fail is not trustworthy.
+
+## Git workflow
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
+`<type>(<scope>): <summary> (Task N)`, e.g.
+`feat(booking): CreateHold transaction logic (Task 4)`. Types used in this
+repo: `feat`, `fix`, `test`, `docs`, `chore`, `ci`.
+
+Two ways work get committed, chosen per task:
+
+- **Small, self-contained tasks** commit straight to `main`.
+- **Larger tasks, or a run of closely related tasks**, get a branch
+  (`task-NN-short-name`), a self-opened PR describing the decision and
+  trade-off, and a self-merge. This is deliberately a solo-friendly
+  version of a real team workflow: a browsable PR history with actual
+  design rationale attached, not just commit messages.
+
+`main` is branch-protected with **"require status checks to pass"** --
+not "require approving review". As the sole contributor, a required-
+review rule would lock the repo, since GitHub does not allow a PR author
+to approve their own PR.
+
+Milestone tags (`v0.1.0` after Phase 1, etc.) mark points where a whole
+phase of the plan is done and tested.
+
+## CI, moved earlier than originally planned
+
+The original task list put CI (GitHub Actions) in Phase 3, alongside
+Docker packaging and load testing, on the theory that it was "polish" for
+a finished project. That was wrong: CI's entire value is catching a
+regression the moment it's introduced, which matters most during active
+development, not after the fact. Waiting until the project was nearly
+done would have meant building the riskiest part -- the concurrency and
+transaction logic in Tasks 4-9 -- with no automated check at all.
+
+`.github/workflows/ci.yml` was added right after Task 6 instead, running
+`go build`, `go vet`, and `go test -race` on every push and PR. It starts
+minimal and grows a step at a time as later tasks add more to check:
+lint (Task 11), the Docker image build (Task 15), the load test (Task 17)
+each add a step to this same file rather than being written from scratch
+at the end.
+
+One concrete benefit of moving it early: `ubuntu-latest` runners ship
+Docker already running and a 64-bit `gcc` already installed, so CI needs
+none of the Windows-specific `CC` workaround described under Task 4 above
+-- `go test ./... -race` just works there without extra setup.
