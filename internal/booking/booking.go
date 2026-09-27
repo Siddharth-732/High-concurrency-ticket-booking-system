@@ -1,3 +1,4 @@
+// this is to define that this package is for booking only
 package booking
 
 import (
@@ -7,10 +8,13 @@ import (
 	"github.com/google/uuid"
 )
 
+// a seat-hold lifetime of 5 minutes
 const HoldTTL = 5 * time.Minute
 
+// Booking status type defenitions
 type Status string
 
+// allowed booking-status constants
 const (
 	StatusHeld            Status = "held"
 	StatusAwaitingPayment Status = "awaiting_payment"
@@ -20,6 +24,7 @@ const (
 	StatusFailed          Status = "failed"
 )
 
+// Booking stuct defenitions
 type Booking struct {
 	ID             uuid.UUID
 	ShowID         uuid.UUID
@@ -32,6 +37,7 @@ type Booking struct {
 	UpdatedAt      time.Time
 }
 
+// Errors returned by booking package
 var (
 	ErrNoSeats                 = errors.New("booking: at least one seat is required")
 	ErrSeatUnavailable         = errors.New("booking: one or more seats are already held or booked")
