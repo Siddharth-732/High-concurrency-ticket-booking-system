@@ -121,7 +121,51 @@ func TestCreateHold_NoSeats(t *testing.T) {
 	}
 }
 
-func TestCreateHold_DuplicateIdempotencyKey(t *testing.T) {
+// TestCreateHold_IdempotentRetry_ReturnsOriginalBooking is the behavior
+// Task 7 exists for: a caller retries the exact same request (same key,
+// same show, same seats) -- perhaps because they never saw the first
+// response -- and must get back the original booking, not an error and
+// not a second booking.
+func TestCreateHold_IdempotentRetry_ReturnsOriginalBooking(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.NewPool(t)
+	store := booking.NewStore(pool)
+
+	showID, seatIDs := seedShowAndSeats(t, ctx, pool, 2)
+	userID := uuid.New()
+
+	first, err := store.CreateHold(ctx, showID, userID, seatIDs, "retry-key")
+	if err != nil {
+		t.Fatalf("first CreateHold: %v", err)
+	}
+
+	second, err := store.CreateHold(ctx, showID, userID, seatIDs, "retry-key")
+	if err != nil {
+		t.Fatalf("retry CreateHold: %v", err)
+	}
+
+	if second.ID != first.ID {
+		t.Errorf("retry returned booking %s, want the original %s", second.ID, first.ID)
+	}
+
+	var bookingCount int
+	err = pool.QueryRow(ctx, `SELECT count(*) FROM bookings WHERE user_id = $1`, userID).Scan(&bookingCount)
+	if err != nil {
+		t.Fatalf("count bookings: %v", err)
+	}
+	if bookingCount != 1 {
+		t.Errorf("bookings for user = %d, want 1 (retry must not create a second booking)", bookingCount)
+	}
+
+	testutil.AssertInvariants(t, ctx, pool)
+}
+
+// TestCreateHold_IdempotencyKeyReusedForDifferentRequest covers the
+// dangerous case a naive idempotency implementation gets wrong: the same
+// key reused for a request with *different* seats. This must not
+// silently return the original booking (the caller would wrongly believe
+// their new seats were held) -- it must be rejected as a distinct error.
+func TestCreateHold_IdempotencyKeyReusedForDifferentRequest(t *testing.T) {
 	ctx := context.Background()
 	pool := testutil.NewPool(t)
 	store := booking.NewStore(pool)
@@ -135,7 +179,7 @@ func TestCreateHold_DuplicateIdempotencyKey(t *testing.T) {
 	}
 
 	_, err = store.CreateHold(ctx, showID, userID, seatIDs[1:], "same-key")
-	if !errors.Is(err, booking.ErrDuplicateIdempotencyKey) {
-		t.Fatalf("second CreateHold error = %v, want ErrDuplicateIdempotencyKey", err)
+	if !errors.Is(err, booking.ErrIdempotencyKeyReused) {
+		t.Fatalf("second CreateHold error = %v, want ErrIdempotencyKeyReused", err)
 	}
 }

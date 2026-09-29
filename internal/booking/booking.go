@@ -39,7 +39,11 @@ type Booking struct {
 
 // Errors returned by booking package
 var (
-	ErrNoSeats                 = errors.New("booking: at least one seat is required")
-	ErrSeatUnavailable         = errors.New("booking: one or more seats are already held or booked")
-	ErrDuplicateIdempotencyKey = errors.New("booking: idempotency key already used")
+	ErrNoSeats         = errors.New("booking: at least one seat is required")
+	ErrSeatUnavailable = errors.New("booking: one or more seats are already held or booked")
+
+	// ErrIdempotencyKeyReused means this user's idempotency key was already used for a request with *different* parameters.
+	// A true retry (same key, same parameters) is not an error: CreateHold returns the original booking instead.
+	// This error only fires on genuine misuse, e.g. a client-side bug that reuses a key across two unrelated requests.
+	ErrIdempotencyKeyReused = errors.New("booking: idempotency key already used for a different request")
 )

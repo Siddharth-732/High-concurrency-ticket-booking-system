@@ -169,3 +169,75 @@ func TestConcurrentHold_OverlappingMultiSeatAllOrNothing(t *testing.T) {
 
 	testutil.AssertInvariants(t, ctx, pool)
 }
+
+// TestConcurrentHold_IdempotentRetriesAllSucceed is Task 5's pattern
+// applied to Task 7: instead of many different callers fighting over a
+// seat, this is one logical caller whose retries (identical key, show,
+// and seats -- e.g. a client that times out and retries blind) all land
+// on the server at the same instant. Unlike the contention tests, there
+// is no "loser" here: every single goroutine must succeed, and all of
+// them must get back the same booking, because they are all really the
+// same request.
+func TestConcurrentHold_IdempotentRetriesAllSucceed(t *testing.T) {
+	ctx := context.Background()
+	pool := testutil.NewPool(t)
+	store := booking.NewStore(pool)
+
+	showID, seatIDs := seedShowAndSeats(t, ctx, pool, 2)
+	userID := uuid.New()
+	const key = "retry-storm-key"
+
+	const retries = 50
+	start := make(chan struct{})
+	type idempotentResult struct {
+		bookingID uuid.UUID
+		err       error
+	}
+	results := make([]idempotentResult, retries)
+
+	var wg sync.WaitGroup
+	wg.Add(retries)
+	for i := 0; i < retries; i++ {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			b, err := store.CreateHold(ctx, showID, userID, seatIDs, key)
+			if err != nil {
+				results[i] = idempotentResult{err: err}
+				return
+			}
+			results[i] = idempotentResult{bookingID: b.ID}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	var failures int
+	seenIDs := make(map[uuid.UUID]struct{})
+	for _, r := range results {
+		if r.err != nil {
+			failures++
+			t.Logf("unexpected error: %v", r.err)
+			continue
+		}
+		seenIDs[r.bookingID] = struct{}{}
+	}
+
+	if failures != 0 {
+		t.Errorf("failures = %d, want 0 (every retry of the same request should succeed)", failures)
+	}
+	if len(seenIDs) != 1 {
+		t.Errorf("goroutines returned %d distinct booking ids, want exactly 1", len(seenIDs))
+	}
+
+	var bookingCount int
+	err := pool.QueryRow(ctx, `SELECT count(*) FROM bookings WHERE user_id = $1 AND idempotency_key = $2`, userID, key).Scan(&bookingCount)
+	if err != nil {
+		t.Fatalf("count bookings: %v", err)
+	}
+	if bookingCount != 1 {
+		t.Errorf("bookings rows = %d, want exactly 1 (50 concurrent retries must not create 50 bookings)", bookingCount)
+	}
+
+	testutil.AssertInvariants(t, ctx, pool)
+}

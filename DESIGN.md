@@ -140,6 +140,49 @@ reports it. This is the difference between "the checker always says
 clean" and "the checker actually detects a broken invariant" -- a checker
 that can't be proven to ever fail is not trustworthy.
 
+## Idempotency keys, and a real deadlock the concurrency test caught (Task 7)
+
+Task 4 rejected a repeated idempotency key outright. Real clients retry
+because they never *saw* a response, not because they want a second
+booking -- so Task 7 changes CreateHold to detect a true retry (same
+user, same key, same show and seat set) and return the *original*
+booking instead of an error.
+
+A key alone isn't enough, though: naively returning the original booking
+for any repeated key would silently swallow a request that reuses a key
+by mistake for genuinely different seats. `bookings.request_fingerprint`
+(migration 000003) is a SHA-256 hash of the show id and the sorted seat
+id set, stored alongside the key. On a repeated key:
+
+- **fingerprint matches** -> this is the same request; return the
+  original booking. The caller cannot tell "I created this just now" from
+  "I already created this a moment ago," which is the point.
+- **fingerprint differs** -> the key was reused for a different request.
+  `ErrIdempotencyKeyReused` is returned rather than silently acting on
+  the wrong seats.
+
+**A real bug, caught by `TestConcurrentHold_IdempotentRetriesAllSucceed`:**
+that test fires 50 goroutines at the same key/show/seats simultaneously
+-- the same "release everyone at once via a closed channel" pattern as
+Task 5. The first version of the duplicate-key handling looked up the
+original booking through `s.pool` *before* explicitly rolling back the
+losing transaction; that rollback was left to the `defer`, which only
+fires once `CreateHold` returns. Under real concurrency this deadlocked
+the connection pool: every one of the 49 losing goroutines held its own
+(aborted, unrolled-back) connection open while asking the same pool for
+a *second* connection to run the lookup -- and none of those second
+connections could ever free up, because every connection in the pool was
+stuck being held by a goroutine waiting on another one. The test hung
+indefinitely instead of failing fast, which is exactly what a real
+connection-pool deadlock looks like in production. The fix is one line:
+call `tx.Rollback(ctx)` explicitly the moment the conflict is detected,
+*before* querying the pool again, instead of waiting for the deferred
+rollback. This is the clearest example in the project so far of why the
+concurrency tests exist: this bug was invisible in every single-threaded
+test (`TestCreateHold_IdempotentRetry_ReturnsOriginalBooking` passed
+against the exact same code) and only a real burst of concurrent load
+exposed it.
+
 ## Git workflow
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
