@@ -183,6 +183,44 @@ test (`TestCreateHold_IdempotentRetry_ReturnsOriginalBooking` passed
 against the exact same code) and only a real burst of concurrent load
 exposed it.
 
+## The hold-expiry sweeper, and where FOR UPDATE finally earns its place (Task 8)
+
+A `held` booking with a 5-minute `expires_at` needs something to actually
+act on that timestamp -- otherwise an abandoned hold blocks its seats
+forever. `Store.SweepExpiredHolds` runs periodically (`RunSweeper`, a
+goroutine with a `time.Ticker`, started once when `booking-svc` boots)
+and releases every `held` booking whose time is up: delete its
+`booking_seats` rows, mark it `expired`, same transaction, same
+all-or-nothing discipline as everywhere else in this project. The
+`bookings_status_expires_at_idx` index from Task 3 exists specifically so
+finding "which holds have expired" is an index lookup, not a table scan.
+
+This is also the first place `SELECT ... FOR UPDATE` is the right tool,
+after deliberately avoiding it for seat-claiming in Task 3. The two
+problems are different: Task 3 needed to stop two *different* rows from
+being inserted for the same seat, which a `UNIQUE` constraint solves
+without any locking at all. Here, the sweeper and a future payment
+confirmation (Task 9) can both try to change the *same single row* --
+one to `expired`, one to `confirmed` -- at nearly the same instant.
+`expireOne` locks the booking row, re-checks its status *after*
+acquiring that lock (not just before), and only then acts. Whichever
+transaction reaches the row first finishes its whole read-check-write
+cycle before the second is allowed to proceed, and the second then sees
+the first's result and backs off correctly -- never both "winning".
+
+`Store.ConfirmBooking` does not exist yet (Task 9 owns it), so
+`TestSweepExpiredHolds_DoesNotRaceWithConcurrentConfirm` proves this
+locking contract now with a minimal hand-rolled competing transaction
+that follows the same `FOR UPDATE`-then-update pattern -- establishing
+the contract Task 9's real implementation must also follow. The test
+doesn't assert which side should win (that's a business decision for
+Task 9 -- should a very-late payment ever be honored?); it only asserts
+the result is never *inconsistent* -- never seats retained on an expired
+booking, never seats missing on a confirmed one -- and it finishes by
+running the Task 6 invariant checker, which would independently catch
+exactly that inconsistency via the `claim_on_released_booking` rule if
+the locking were ever wrong.
+
 ## Git workflow
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
