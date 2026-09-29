@@ -10,17 +10,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// SweepExpiredHolds finds every booking still marked "held" whose
-// expires_at has passed, and releases it: its booking_seats rows are
-// deleted (freeing the seats) and its status becomes "expired". It
-// returns how many bookings it actually released.
-//
-// Each booking is released in its own transaction, not one big
-// transaction for the whole batch. Two reasons: a problem with one
-// booking (or a lock held by a concurrent confirm/cancel, see below)
-// doesn't block every other expired booking from being released in the
-// same sweep, and no single sweep holds a lock on many rows for longer
-// than it has to.
 func (s *Store) SweepExpiredHolds(ctx context.Context) (int, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT id FROM bookings WHERE status = $1 AND expires_at <= now()
@@ -62,16 +51,6 @@ func (s *Store) SweepExpiredHolds(ctx context.Context) (int, error) {
 	return released, nil
 }
 
-// expireOne releases a single booking, if it is still eligible. It
-// locks the booking row with SELECT ... FOR UPDATE and re-checks status
-// and expiry *after* acquiring the lock, not just before: the list of
-// candidate ids was read moments earlier by SweepExpiredHolds, and in
-// that gap this exact booking could have been confirmed or cancelled by
-// a concurrent request. FOR UPDATE makes that request (once it starts
-// its own status-changing transaction on this row) either finish first,
-// so we see its result and correctly do nothing, or wait for us, so it
-// sees ours. Either order is fine; what's not fine is both proceeding as
-// if the other doesn't exist.
 func (s *Store) expireOne(ctx context.Context, bookingID uuid.UUID) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -108,9 +87,6 @@ func (s *Store) expireOne(ctx context.Context, bookingID uuid.UUID) (bool, error
 	return true, nil
 }
 
-// RunSweeper runs SweepExpiredHolds on a fixed interval until ctx is
-// cancelled. It is meant to be launched once, in its own goroutine, when
-// booking-svc starts -- see cmd/booking-svc (Task 10).
 func (s *Store) RunSweeper(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
