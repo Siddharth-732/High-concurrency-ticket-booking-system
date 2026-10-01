@@ -46,4 +46,23 @@ var (
 	// A true retry (same key, same parameters) is not an error: CreateHold returns the original booking instead.
 	// This error only fires on genuine misuse, e.g. a client-side bug that reuses a key across two unrelated requests.
 	ErrIdempotencyKeyReused = errors.New("booking: idempotency key already used for a different request")
+
+	// ErrBookingNotFound means no booking exists with the given id.
+	ErrBookingNotFound = errors.New("booking: not found")
+
+	// ErrBookingNotHeld means the caller tried to do something that only
+	// makes sense for a booking still in the "held" state (Checkout,
+	// CancelBooking), but the booking has already moved on -- to
+	// awaiting_payment, confirmed, cancelled, expired, or failed.
+	ErrBookingNotHeld = errors.New("booking: not in held state")
+
+	// ErrHoldExpired means Checkout was called after the hold's 5 minutes
+	// ran out, but the sweeper has not released it yet. The caller must
+	// create a new hold; this one cannot be checked out.
+	ErrHoldExpired = errors.New("booking: hold has expired")
+
+	// ErrPaymentNotFound means HandlePaymentCallback was called with an
+	// external_payment_id that Checkout never created. This should not
+	// happen in practice, since only Checkout creates payments rows.
+	ErrPaymentNotFound = errors.New("booking: payment not found")
 )

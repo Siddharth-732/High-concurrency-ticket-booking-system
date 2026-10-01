@@ -221,6 +221,52 @@ running the Task 6 invariant checker, which would independently catch
 exactly that inconsistency via the `claim_on_released_booking` rule if
 the locking were ever wrong.
 
+## The booking lifecycle: Checkout, payment callbacks, cancellation (Task 9)
+
+`internal/booking/lifecycle.go` closes the gap left deliberately open
+through Tasks 4-8: until now, nothing in the codebase ever moved a
+booking to `confirmed` -- only `held` (Task 4) and `expired` (Task 8)
+existed in practice.
+
+**`Checkout(bookingID, externalPaymentID)`** moves `held -> awaiting_payment`.
+It does not talk to a real payment gateway -- `payment-svc` doesn't exist
+until Task 12 -- so `externalPaymentID` is supplied by the caller,
+standing in for "payment-svc already handed us this id." It locks the
+booking row with the same `FOR UPDATE` pattern as the sweeper, and
+refuses with `ErrHoldExpired` if the hold's time is already up but the
+sweeper hasn't released it yet, rather than letting an effectively-dead
+hold be checked out.
+
+**`HandlePaymentCallback(externalPaymentID, success)`** is where the
+project's "duplicate and late payment" claim becomes real code. It locks
+the **payments** row first, by `external_payment_id`. If that payment has
+already been processed, the call is a duplicate -- a no-op that returns
+the current state, not an error, and critically: *whatever outcome this
+duplicate claims is ignored*. The first callback to actually arrive is
+the one that counts; a later, conflicting duplicate can never flip a
+confirmed booking back to failed or vice versa. Only then does it lock
+the **booking** row and apply the real effect: confirm it (seats are kept
+forever, as decided in Task 3), or fail it (seats are deleted, freeing
+them, exactly like an expired or cancelled hold).
+
+`TestConcurrentHandlePaymentCallback_DuplicatesAreSafe` fires 50
+goroutines at the *same* callback simultaneously -- not sequentially,
+which would only prove the easy case. The effect (confirm, seat kept)
+must apply exactly once no matter how many duplicates arrive at once.
+
+**`CancelBooking(bookingID)`** only works from `held`. Cancelling
+mid-payment (`awaiting_payment`) is deliberately out of scope: it would
+mean coordinating a user-initiated cancel against whatever `payment-svc`
+is doing at that exact instant, which is meaningfully more complex than
+this project currently needs.
+
+**Known, deliberate gap:** an `awaiting_payment` booking does not
+currently time out. If a payment callback is ever dropped entirely (the
+project's `DROP_RATE` chaos scenario, Task 12), that booking stays
+`awaiting_payment` forever with nothing to reclaim its seats. This is
+left open rather than quietly ignored; whether it needs fixing depends on
+what the chaos test (Task 16) actually exposes.
+
 ## Git workflow
 
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
